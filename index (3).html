@@ -1,0 +1,390 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NormalDB: Learn Database Design</title>
+    <script src="https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.production.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.20.6/Babel.min.js"></script>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.23.0/dist/cytoscape.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sql.js@1.8.0/dist/sql-wasm.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .section { min-height: 100vh; padding: 4rem; scroll-snap-align: start; position: relative; }
+        .sticky-header { position: sticky; top: 0; background: white; z-index: 10; padding: 1rem; }
+        .table-viz { width: 100%; height: 300px; }
+        .highlight { stroke: #00ff00; stroke-width: 3; fill: #e0ffe0; transition: all 1s; }
+        .fd-arrow { stroke-width: 3; marker-end: url(#arrow); animation: pulse 2s infinite; }
+        @keyframes pulse { 0% { stroke-opacity: 1; } 50% { stroke-opacity: 0.5; } 100% { stroke-opacity: 1; } }
+        .fd-arrow-red { stroke: #ff4500; }
+        .fd-arrow-blue { stroke: #1e90ff; }
+        .fd-arrow-purple { stroke: #800080; }
+        body { scroll-snap-type: y mandatory; overflow-y: scroll; }
+        .fade-in { opacity: 0; transition: opacity 1s; }
+        .fade-in.visible { opacity: 1; }
+        .error { color: red; }
+        .tooltip { position: absolute; background: #333; color: white; padding: 5px; border-radius: 3px; font-size: 12px; }
+        .table-box { transition: transform 1s, opacity 1s; }
+    </style>
+</head>
+<body class="bg-gray-100 font-sans">
+    <div id="root" class="container mx-auto"></div>
+
+    <script type="text/babel" data-type="module">
+        const { useState, useEffect, useRef } = React;
+
+        let db;
+        async function initDB() {
+            try {
+                const SQL = await initSqlJs({ locateFile: file => `https://cdn.jsdelivr.net/npm/sql.js@1.8.0/dist/${file}` });
+                db = new SQL.Database();
+                db.run(`
+                    CREATE TABLE RawRetail (
+                        InvoiceNo TEXT, StockCode TEXT, Description TEXT, Quantity INTEGER,
+                        InvoiceDate TEXT, UnitPrice REAL, CustomerID INTEGER, Country TEXT
+                    );
+                    INSERT INTO RawRetail VALUES
+                        ('536365', '85123A', 'CREAM HANGING HEART T-LIGHT HOLDER', 6, '2010-12-01 08:26:00', 2.55, 17850, 'United Kingdom'),
+                        ('536365', '71053', 'WHITE METAL LANTERN', 6, '2010-12-01 08:26:00', 3.39, 17850, 'United Kingdom'),
+                        ('536366', '84406B', 'CREAM CUPID HEARTS COAT HANGER', 8, '2010-12-01 08:28:00', 2.75, 17850, 'United Kingdom'),
+                        ('536367', '84879', 'ASSORTED COLOUR BIRD ORNAMENT', 32, '2010-12-01 08:34:00', 1.69, 13047, 'United Kingdom'),
+                        ('536368', '22960', 'JAM MAKING SET WITH JARS', 6, '2010-12-01 08:34:00', 4.25, 13047, 'United Kingdom');
+                `);
+                return true;
+            } catch (err) {
+                console.error('DB Init Error:', err);
+                return false;
+            }
+        }
+        initDB();
+
+        function NormalDB() {
+            const [step, setStep] = useState(0);
+            const [entities, setEntities] = useState([
+                {
+                    id: 'RawRetail',
+                    attrs: ['InvoiceNo', 'StockCode', 'Description', 'Quantity', 'InvoiceDate', 'UnitPrice', 'CustomerID', 'Country'],
+                    pos: { x: 300, y: 150 }
+                }
+            ]);
+            const [metrics, setMetrics] = useState({ redundancy: 60, anomalies: 40 });
+            const [error, setError] = useState(null);
+            const sectionRefs = useRef([]);
+            const fileInputRef = useRef(null);
+
+            useEffect(() => {
+                const observer = new IntersectionObserver(
+                    (entries) => {
+                        entries.forEach(entry => {
+                            if (entry.isIntersecting) {
+                                entry.target.classList.add('visible');
+                            }
+                        });
+                    },
+                    { threshold: 0.5 }
+                );
+                sectionRefs.current.forEach(ref => ref && observer.observe(ref));
+                return () => sectionRefs.current.forEach(ref => ref && observer.unobserve(ref));
+            }, [entities]);
+
+            const handleFileUpload = (event) => {
+                const file = event.target.files[0];
+                if (!file) return;
+                if (file.size > 10 * 1024 * 1024) {
+                    setError('File too large. Max 10MB.');
+                    return;
+                }
+                const reader = new FileReader();
+                reader.onload = async (e) => {
+                    try {
+                        const csv = e.target.result;
+                        const rows = csv.split('\n').map(row => row.split(','));
+                        if (rows.length < 2) throw new Error('CSV is empty or invalid');
+                        const headers = rows[0].map(h => h.trim());
+                        const types = headers.map((_, i) => {
+                            const values = rows.slice(1).map(row => row[i]);
+                            return values.every(v => !isNaN(v) && v !== '') ? 'INTEGER' : 'TEXT';
+                        });
+                        const createTable = `CREATE TABLE RawRetail (${headers.map((h, i) => `"${h}" ${types[i]}`).join(', ')})`;
+                        db.run('DROP TABLE IF EXISTS RawRetail');
+                        db.run(createTable);
+                        const insertStmt = db.prepare(`INSERT INTO RawRetail VALUES (${headers.map(() => '?').join(', ')})`);
+                        rows.slice(1).forEach(row => {
+                            if (row.length === headers.length) insertStmt.run(row);
+                        });
+                        insertStmt.free();
+                        setEntities([{ id: 'RawRetail', attrs: headers, pos: { x: 300, y: 150 } }]);
+                        setStep(0);
+                        setMetrics({ redundancy: 60, anomalies: 40 });
+                        setError(null);
+                    } catch (err) {
+                        setError('Error processing CSV: ' + err.message);
+                    }
+                };
+                reader.readAsText(file);
+            };
+
+            const renderTable = (tableId, attrs, data, containerId, fds = [], posX = 300, colorClass = 'fd-arrow-red') => {
+                const svg = d3.select(`#${containerId}`).attr('width', 800).attr('height', 300);
+                svg.selectAll('*').remove();
+                const g = svg.append('g').attr('class', 'table-box').attr('transform', `translate(${posX}, 150)`);
+                g.append('rect')
+                    .attr('x', -50).attr('y', -30).attr('width', attrs.length * 100 + 100).attr('height', 100)
+                    .attr('fill', '#f0f0f0').attr('stroke', '#000').attr('stroke-width', 1)
+                    .transition().duration(1000).attr('fill', '#e0ffe0');
+                g.append('text').attr('x', 0).attr('y', -10).text(tableId).attr('font-weight', 'bold');
+                attrs.forEach((attr, i) => {
+                    const text = g.append('text')
+                        .attr('x', 10 + i * 100).attr('y', 10).text(attr)
+                        .attr('class', fds.some(fd => fd[0] === i || fd[1] === i) ? 'highlight' : '');
+                    text.append('title').text(fds.some(fd => fd[0] === i) ? `Determines ${attrs[fds.find(fd => fd[0] === i)[1]]}` : 
+                                            fds.some(fd => fd[1] === i) ? `Determined by ${attrs[fds.find(fd => fd[1] === i)[0]]}` : '');
+                });
+                data.slice(0, 3).forEach((row, i) => {
+                    row.forEach((cell, j) => {
+                        g.append('text').attr('x', 10 + j * 100).attr('y', 30 + i * 20).text(cell)
+                            .transition().duration(1000).attr('fill', '#228b22');
+                    });
+                });
+                fds.forEach((fd, idx) => {
+                    const [fromIdx, toIdx] = fd;
+                    g.append('path')
+                        .attr('class', `fd-arrow ${colorClass}`)
+                        .attr('d', `M${10 + fromIdx * 100 + 50},${10} L${10 + toIdx * 100 + 50},${10}`)
+                        .attr('marker-end', 'url(#arrow)')
+                        .transition().duration(1500).attr('stroke-opacity', 1);
+                    g.append('text')
+                        .attr('class', 'tooltip')
+                        .attr('x', (10 + fromIdx * 100 + 10 + toIdx * 100) / 2)
+                        .attr('y', 0)
+                        .text(`${attrs[fromIdx]} → ${attrs[toIdx]}`)
+                        .transition().duration(1000).attr('fill', 'white');
+                });
+                svg.append('defs').append('marker')
+                    .attr('id', 'arrow')
+                    .attr('viewBox', '0 -5 10 10')
+                    .attr('refX', 5)
+                    .attr('refY', 0)
+                    .attr('markerWidth', 6)
+                    .attr('markerHeight', 6)
+                    .attr('orient', 'auto')
+                    .append('path')
+                    .attr('d', 'M0,-5L10,0L0,5')
+                    .attr('fill', colorClass === 'fd-arrow-red' ? '#ff4500' : colorClass === 'fd-arrow-blue' ? '#1e90ff' : '#800080');
+                return g;
+            };
+
+            const normalizeStep = () => {
+                if (step === 0) {
+                    const newEntities = [
+                        { id: 'Invoices', attrs: ['InvoiceNo', 'CustomerID', 'InvoiceDate', 'Country'], pos: { x: 100, y: 150 } },
+                        { id: 'InvoiceItems', attrs: ['InvoiceNo', 'StockCode', 'Description', 'Quantity', 'UnitPrice'], pos: { x: 400, y: 150 } }
+                    ];
+                    setEntities(newEntities);
+                    db.run(`
+                        CREATE TABLE Invoices (InvoiceNo TEXT, CustomerID INTEGER, InvoiceDate TEXT, Country TEXT);
+                        CREATE TABLE InvoiceItems (InvoiceNo TEXT, StockCode TEXT, Description TEXT, Quantity INTEGER, UnitPrice REAL);
+                        INSERT INTO Invoices SELECT DISTINCT InvoiceNo, CustomerID, InvoiceDate, Country FROM RawRetail;
+                        INSERT INTO InvoiceItems SELECT InvoiceNo, StockCode, Description, Quantity, UnitPrice FROM RawRetail;
+                    `);
+                    setMetrics({ redundancy: 40, anomalies: 20 });
+                    d3.select('#table-viz-1').selectAll('*').remove();
+                    newEntities.forEach((entity, i) => {
+                        const g = renderTable(entity.id, entity.attrs, sampleData.map(r => entity.attrs.map(a => r[entities[0].attrs.indexOf(a)] || '')), 'table-viz-1', [], entity.pos.x, 'fd-arrow-red');
+                        g.transition().duration(1000).attr('transform', `translate(${entity.pos.x}, 150)`).attr('opacity', 1);
+                    });
+                } else if (step === 1) {
+                    const newEntities = [
+                        { id: 'Invoices', attrs: ['InvoiceNo', 'CustomerID', 'InvoiceDate'], pos: { x: 50, y: 150 } },
+                        { id: 'Customers', attrs: ['CustomerID', 'Country'], pos: { x: 300, y: 50 } },
+                        { id: 'InvoiceItems', attrs: ['InvoiceNo', 'StockCode', 'Description', 'Quantity', 'UnitPrice'], pos: { x: 400, y: 150 } }
+                    ];
+                    setEntities(newEntities);
+                    db.run(`
+                        CREATE TABLE Customers (CustomerID INTEGER, Country TEXT);
+                        INSERT INTO Customers SELECT DISTINCT CustomerID, Country FROM Invoices;
+                        ALTER TABLE Invoices DROP COLUMN Country;
+                    `);
+                    setMetrics({ redundancy: 20, anomalies: 10 });
+                    d3.select('#table-viz-2').selectAll('*').remove();
+                    newEntities.forEach((entity, i) => {
+                        const fds = entity.id === 'Customers' ? [[0, 1]] : [];
+                        const g = renderTable(entity.id, entity.attrs, sampleData.map(r => entity.attrs.map(a => r[entities[0].attrs.indexOf(a)] || '')), 'table-viz-2', fds, entity.pos.x, 'fd-arrow-blue');
+                        g.transition().duration(1000).attr('transform', `translate(${entity.pos.x}, ${entity.pos.y})`).attr('opacity', 1);
+                    });
+                } else if (step === 2) {
+                    const newEntities = [
+                        { id: 'Invoices', attrs: ['InvoiceNo', 'CustomerID', 'InvoiceDate'], pos: { x: 50, y: 150 } },
+                        { id: 'Customers', attrs: ['CustomerID', 'Country'], pos: { x: 300, y: 50 } },
+                        { id: 'InvoiceItems', attrs: ['InvoiceNo', 'StockCode', 'Quantity'], pos: { x: 400, y: 150 } },
+                        { id: 'Products', attrs: ['StockCode', 'Description', 'UnitPrice'], pos: { x: 600, y: 150 } }
+                    ];
+                    setEntities(newEntities);
+                    db.run(`
+                        CREATE TABLE Products (StockCode TEXT, Description TEXT, UnitPrice REAL);
+                        INSERT INTO Products SELECT DISTINCT StockCode, Description, UnitPrice FROM InvoiceItems;
+                        ALTER TABLE InvoiceItems DROP COLUMN Description;
+                        ALTER TABLE InvoiceItems DROP COLUMN UnitPrice;
+                    `);
+                    setMetrics({ redundancy: 5, anomalies: 2 });
+                    d3.select('#table-viz-3').selectAll('*').remove();
+                    newEntities.forEach((entity, i) => {
+                        const fds = entity.id === 'Products' ? [[0, 1], [0, 2]] : entity.id === 'Customers' ? [[0, 1]] : [];
+                        const g = renderTable(entity.id, entity.attrs, sampleData.map(r => entity.attrs.map(a => r[entities[0].attrs.indexOf(a)] || '')), 'table-viz-3', fds, entity.pos.x, entity.id === 'Products' ? 'fd-arrow-purple' : 'fd-arrow-blue');
+                        g.transition().duration(1000).attr('transform', `translate(${entity.pos.x}, ${entity.pos.y})`).attr('opacity', 1);
+                    });
+                }
+                setStep(step + 1);
+            };
+
+            const sampleData = [
+                ['536365', '85123A', 'CREAM HANGING HEART T-LIGHT HOLDER', 6, '2010-12-01 08:26:00', 2.55, 17850, 'United Kingdom'],
+                ['536365', '71053', 'WHITE METAL LANTERN', 6, '2010-12-01 08:26:00', 3.39, 17850, 'United Kingdom'],
+                ['536366', '84406B', 'CREAM CUPID HEARTS COAT HANGER', 8, '2010-12-01 08:28:00', 2.75, 17850, 'United Kingdom']
+            ];
+
+            return (
+                <div>
+                    <section className="section bg-white fade-in" ref={el => sectionRefs.current[0] = el}>
+                        <div className="sticky-header">
+                            <h1 className="text-4xl font-bold mb-4">NormalDB: Design Your Database</h1>
+                        </div>
+                        <p className="text-lg mb-4">Upload a CSV or use our e-commerce dataset (~500k rows) to normalize!</p>
+                        <input
+                            type="file"
+                            accept=".csv"
+                            ref={fileInputRef}
+                            onChange={handleFileUpload}
+                            className="mb-4"
+                            aria-label="Upload CSV dataset"
+                        />
+                        {error && <p className="error">{error}</p>}
+                        <svg id="table-viz-0" className="table-viz"></svg>
+                        <p className="text-lg mb-4">Redundancy: {metrics.redundancy}% | Anomalies: {metrics.anomalies}%</p>
+                        <button
+                            className="mt-4 bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600"
+                            onClick={() => {
+                                renderTable('RawRetail', entities[0].attrs, sampleData, 'table-viz-0', [], 300, 'fd-arrow-red');
+                                window.scrollTo({ top: window.innerHeight, behavior: 'smooth' });
+                            }}
+                            aria-label="Start modeling"
+                        >
+                            Start Modeling
+                        </button>
+                    </section>
+                    <section className="section bg-gray-50 fade-in" ref={el => sectionRefs.current[1] = el}>
+                        <div className="sticky-header">
+                            <h2 className="text-3xl font-semibold mb-4">Step 1: First Normal Form (1NF)</h2>
+                        </div>
+                        <p className="text-lg mb-4">Ensure atomic values by splitting invoices and items.</p>
+                        <svg id="table-viz-1" className="table-viz"></svg>
+                        <p className="text-lg mb-4">Redundancy: {metrics.redundancy}% | Anomalies: {metrics.anomalies}%</p>
+                        <button
+                            className="mt-4 bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600"
+                            onClick={() => {
+                                normalizeStep();
+                                window.scrollTo({ top: window.innerHeight * 2, behavior: 'smooth' });
+                            }}
+                            aria-label="Normalize to 1NF"
+                        >
+                            Normalize to 1NF
+                        </button>
+                    </section>
+                    <section className="section bg-white fade-in" ref={el => sectionRefs.current[2] = el}>
+                        <div className="sticky-header">
+                            <h2 className="text-3xl font-semibold mb-4">Step 2: Second Normal Form (2NF)</h2>
+                        </div>
+                        <p className="text-lg mb-4">Eliminate partial dependencies: CustomerID → Country.</p>
+                        <svg id="table-viz-2" className="table-viz"></svg>
+                        <p className="text-lg mb-4">Redundancy: {metrics.redundancy}% | Anomalies: {metrics.anomalies}%</p>
+                        <button
+                            className="mt-4 bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600"
+                            onClick={() => {
+                                normalizeStep();
+                                window.scrollTo({ top: window.innerHeight * 3, behavior: 'smooth' });
+                            }}
+                            aria-label="Normalize to 2NF"
+                        >
+                            Normalize to 2NF
+                        </button>
+                    </section>
+                    <section className="section bg-gray-50 fade-in" ref={el => sectionRefs.current[3] = el}>
+                        <div className="sticky-header">
+                            <h2 className="text-3xl font-semibold mb-4">Step 3: Third Normal Form (3NF)</h2>
+                        </div>
+                        <p className="text-lg mb-4">Remove transitive dependencies: StockCode → Description, UnitPrice.</p>
+                        <svg id="table-viz-3" className="table-viz"></svg>
+                        <p className="text-lg mb-4">Redundancy: {metrics.redundancy}% | Anomalies: {metrics.anomalies}%</p>
+                        <button
+                            className="mt-4 bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600"
+                            onClick={() => {
+                                normalizeStep();
+                                window.scrollTo({ top: window.innerHeight * 4, behavior: 'smooth' });
+                            }}
+                            aria-label="Normalize to 3NF"
+                        >
+                            Normalize to 3NF
+                        </button>
+                    </section>
+                    <section className="section bg-white fade-in" ref={el => sectionRefs.current[4] = el}>
+                        <div className="sticky-header">
+                            <h2 className="text-3xl font-semibold mb-4">View Your ER Diagram</h2>
+                        </div>
+                        <p className="text-lg mb-4">See the normalized schema as an ER diagram.</p>
+                        <a
+                            href="/erd.html"
+                            className="mt-4 bg-purple-500 text-white px-4 py-2 rounded hover:bg-purple-600"
+                            aria-label="Go to ERD page"
+                        >
+                            View ER Diagram
+                        </a>
+                    </section>
+                </div>
+            );
+        }
+
+        ReactDOM.render(<NormalDB />, document.getElementById('root'));
+    </script>
+</body>
+</html>

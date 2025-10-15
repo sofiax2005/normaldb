@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NormalDB: ER Diagram</title>
+    <script src="https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.production.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.20.6/Babel.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.23.0/dist/cytoscape.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sql.js@1.8.0/dist/sql-wasm.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .erd-canvas { width: 100%; height: 600px; border: 1px solid #ccc; }
+        .highlight { stroke: green; stroke-width: 3; }
+    </style>
+</head>
+<body class="bg-gray-100 font-sans">
+    <div id="root" className="container mx-auto p-4"></div>
+
+    <script type="text/babel" data-type="module">
+        const { useEffect } = React;
+
+        let db;
+        async function initDB() {
+            try {
+                const SQL = await initSqlJs({ locateFile: file => `https://cdn.jsdelivr.net/npm/sql.js@1.8.0/dist/${file}` });
+                db = new SQL.Database();
+                db.run(`
+                    CREATE TABLE Invoices (InvoiceNo TEXT, CustomerID INTEGER, InvoiceDate TEXT);
+                    CREATE TABLE Customers (CustomerID INTEGER, Country TEXT);
+                    CREATE TABLE InvoiceItems (InvoiceNo TEXT, StockCode TEXT, Quantity INTEGER);
+                    CREATE TABLE Products (StockCode TEXT, Description TEXT, UnitPrice REAL);
+                    INSERT INTO Invoices VALUES
+                        ('536365', 17850, '2010-12-01 08:26:00'),
+                        ('536366', 17850, '2010-12-01 08:28:00'),
+                        ('536367', 13047, '2010-12-01 08:34:00');
+                    INSERT INTO Customers VALUES
+                        (17850, 'United Kingdom'),
+                        (13047, 'United Kingdom');
+                    INSERT INTO InvoiceItems VALUES
+                        ('536365', '85123A', 6),
+                        ('536365', '71053', 6),
+                        ('536366', '84406B', 8);
+                    INSERT INTO Products VALUES
+                        ('85123A', 'CREAM HANGING HEART T-LIGHT HOLDER', 2.55),
+                        ('71053', 'WHITE METAL LANTERN', 3.39),
+                        ('84406B', 'CREAM CUPID HEARTS COAT HANGER', 2.75);
+                `);
+            } catch (err) {
+                console.error('DB Init Error:', err);
+            }
+        }
+        initDB();
+
+        function ERDPage() {
+            useEffect(() => {
+                const cy = cytoscape({
+                    container: document.getElementById('erd-canvas'),
+                    elements: [
+                        { data: { id: 'Invoices', label: 'Invoices\nInvoiceNo, CustomerID, InvoiceDate' }, position: { x: 50, y: 200 } },
+                        { data: { id: 'Customers', label: 'Customers\nCustomerID, Country' }, position: { x: 250, y: 100 } },
+                        { data: { id: 'InvoiceItems', label: 'InvoiceItems\nInvoiceNo, StockCode, Quantity' }, position: { x: 400, y: 200 } },
+                        { data: { id: 'Products', label: 'Products\nStockCode, Description, UnitPrice' }, position: { x: 600, y: 200 } },
+                        { data: { id: 'e1', source: 'Invoices', target: 'InvoiceItems' } },
+                        { data: { id: 'e2', source: 'Invoices', target: 'Customers' } },
+                        { data: { id: 'e3', source: 'InvoiceItems', target: 'Products' } }
+                    ],
+                    style: [
+                        { selector: 'node', style: { 'label': 'data(label)', 'background-color': '#fff', 'border-color': '#000', 'border-width': 1, 'text-wrap': 'wrap', 'text-max-width': '150px' } },
+                        { selector: 'edge', style: { 'width': 2, 'line-color': '#ccc', 'target-arrow-shape': 'triangle' } },
+                        { selector: '.highlight', style: { 'line-color': 'green', 'width': 3 } }
+                    ],
+                    layout: { name: 'preset' }
+                });
+                cy.edges().forEach(edge => edge.animate({ style: { 'line-color': 'green', 'width': 3 } }, { duration: 1000 }));
+                return () => cy.destroy();
+            }, []);
+
+            return (
+                <div>
+                    <h1 className="text-3xl font-bold text-center mb-4">NormalDB: ER Diagram</h1>
+                    <div id="erd-canvas" className="erd-canvas" aria-label="ER Diagram"></div>
+                    <div className="flex justify-between mt-4">
+                        <a
+                            href="/index.html"
+                            className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600"
+                            aria-label="Back to tutorial"
+                        >
+                            Back to Tutorial
+                        </a>
+                        <a
+                            href="/query.html"
+                            className="bg-purple-500 text-white px-4 py-2 rounded hover:bg-purple-600"
+                            aria-label="Go to query page"
+                        >
+                            Go to Query Page
+                        </a>
+                    </div>
+                </div>
+            );
+        }
+
+        ReactDOM.render(<ERDPage />, document.getElementById('root'));
+    </script>
+</body>
+</html>

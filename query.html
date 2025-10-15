@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NormalDB: Query Your Database</title>
+    <script src="https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.production.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.20.6/Babel.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sql.js@1.8.0/dist/sql-wasm.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.9/lib/codemirror.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.9/mode/sql/sql.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.9/addon/hint/show-hint.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.9/addon/hint/sql-hint.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.9/lib/codemirror.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.9/addon/hint/show-hint.min.css">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .CodeMirror { height: 200px; border: 1px solid #ccc; }
+        .error { color: red; }
+    </style>
+</head>
+<body class="bg-gray-100 font-sans">
+    <div id="root" className="container mx-auto p-4"></div>
+
+    <script type="text/babel" data-type="module">
+        const { useState, useEffect, useRef } = React;
+
+        let db;
+        async function initDB() {
+            try {
+                const SQL = await initSqlJs({ locateFile: file => `https://cdn.jsdelivr.net/npm/sql.js@1.8.0/dist/${file}` });
+                db = new SQL.Database();
+                db.run(`
+                    CREATE TABLE Invoices (InvoiceNo TEXT, CustomerID INTEGER, InvoiceDate TEXT);
+                    CREATE TABLE Customers (CustomerID INTEGER, Country TEXT);
+                    CREATE TABLE InvoiceItems (InvoiceNo TEXT, StockCode TEXT, Quantity INTEGER);
+                    CREATE TABLE Products (StockCode TEXT, Description TEXT, UnitPrice REAL);
+                    INSERT INTO Invoices VALUES
+                        ('536365', 17850, '2010-12-01 08:26:00'),
+                        ('536366', 17850, '2010-12-01 08:28:00'),
+                        ('536367', 13047, '2010-12-01 08:34:00');
+                    INSERT INTO Customers VALUES
+                        (17850, 'United Kingdom'),
+                        (13047, 'United Kingdom');
+                    INSERT INTO InvoiceItems VALUES
+                        ('536365', '85123A', 6),
+                        ('536365', '71053', 6),
+                        ('536366', '84406B', 8);
+                    INSERT INTO Products VALUES
+                        ('85123A', 'CREAM HANGING HEART T-LIGHT HOLDER', 2.55),
+                        ('71053', 'WHITE METAL LANTERN', 3.39),
+                        ('84406B', 'CREAM CUPID HEARTS COAT HANGER', 2.75);
+                `);
+            } catch (err) {
+                console.error('DB Init Error:', err);
+            }
+        }
+        initDB();
+
+        const mockAI = (query) => {
+            const q = query.toLowerCase();
+            if (q.includes('top customers')) {
+                return {
+                    sql: `SELECT c.CustomerID, c.Country, COUNT(i.InvoiceNo) as OrderCount
+                          FROM Customers c JOIN Invoices i ON c.CustomerID = i.CustomerID
+                          GROUP BY c.CustomerID ORDER BY OrderCount DESC`,
+                    explanation: 'Groups invoices by customer and counts orders.'
+                };
+            } else if (q.includes('total sales')) {
+                return {
+                    sql: `SELECT p.Description, SUM(ii.Quantity * p.UnitPrice) as Total
+                          FROM InvoiceItems ii JOIN Products p ON ii.StockCode = p.StockCode
+                          GROUP BY p.StockCode`,
+                    explanation: 'Calculates total sales per product.'
+                };
+            }
+            return { sql: 'SELECT * FROM Invoices', explanation: 'Fetch all invoices.' };
+        };
+
+        function QueryPage() {
+            const [aiQuery, setAiQuery] = useState('');
+            const [sqlQuery, setSqlQuery] = useState('');
+            const [results, setResults] = useState(null);
+            const [error, setError] = useState(null);
+            const editorRef = useRef(null);
+
+            useEffect(() => {
+                editorRef.current = CodeMirror.fromTextArea(document.getElementById('sqlEditor'), {
+                    mode: 'text/x-sql',
+                    lineNumbers: true,
+                    extraKeys: { 'Ctrl-Space': 'autocomplete' },
+                    hintOptions: {
+                        tables: {
+                            Invoices: ['InvoiceNo', 'CustomerID', 'InvoiceDate'],
+                            Customers: ['CustomerID', 'Country'],
+                            InvoiceItems: ['InvoiceNo', 'StockCode', 'Quantity'],
+                            Products: ['StockCode', 'Description', 'UnitPrice']
+                        }
+                    }
+                });
+                editorRef.current.on('change', () => {
+                    setSqlQuery(editorRef.current.getValue());
+                });
+                return () => editorRef.current.toTextArea();
+            }, []);
+
+            const handleAIQuery = () => {
+                try {
+                    const { sql } = mockAI(aiQuery);
+                    const results = db.exec(sql);
+                    setResults(results[0]);
+                    setError(null);
+                } catch (err) {
+                    setError('AI Query error: ' + err.message);
+                }
+            };
+
+            const handleSQLQuery = () => {
+                try {
+                    const results = db.exec(sqlQuery);
+                    setResults(results[0]);
+                    setError(null);
+                } catch (err) {
+                    setError('SQL Query error: ' + err.message);
+                }
+            };
+
+            const exportCSV = () => {
+                if (!results) return;
+                const csv = [results.columns.join(',')]
+                    .concat(results.values.map(row => row.join(',')))
+                    .join('\n');
+                const blob = new Blob([csv], { type: 'text/csv' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'query_results.csv';
+                a.click();
+                URL.revokeObjectURL(url);
+            };
+
+            return (
+                <div>
+                    <h1 className="text-3xl font-bold text-center mb-4">NormalDB: Query Your Database</h1>
+                    {error && <p className="error text-center">{error}</p>}
+                    <div className="grid grid-cols-2 gap-4">
+                        <div className="bg-white p-4 rounded shadow">
+                            <h2 className="text-xl font-semibold mb-2">AI Chat</h2>
+                            <input
+                                className="w-full border p-2 mb-2"
+                                value={aiQuery}
+                                onChange={(e) => setAiQuery(e.target.value)}
+                                onKeyPress={(e) => e.key === 'Enter' && handleAIQuery()}
+                                placeholder="e.g., Show top customers by orders or total sales"
+                                aria-label="AI query input"
+                            />
+                            <button
+                                className="bg-purple-500 text-white px-4 py-2 rounded hover:bg-purple-600"
+                                onClick={handleAIQuery}
+                                aria-label="Run AI query"
+                            >
+                                Run AI Query
+                            </button>
+                        </div>
+                        <div className="bg-white p-4 rounded shadow">
+                            <h2 className="text-xl font-semibold mb-2">SQL Editor</h2>
+                            <textarea id="sqlEditor" className="w-full" defaultValue={sqlQuery}></textarea>
+                            <button
+                                className="mt-2 bg-purple-500 text-white px-4 py-2 rounded hover:bg-purple-600"
+                                onClick={handleSQLQuery}
+                                aria-label="Run SQL query"
+                            >
+                                Run SQL
+                            </button>
+                        </div>
+                    </div>
+                    {results && (
+                        <div className="mt-4 bg-white p-4 rounded shadow">
+                            <h2 className="text-xl font-semibold mb-2">Results</h2>
+                            <table className="w-full border-collapse border">
+                                <thead>
+                                    <tr>
+                                        {results.columns.map(col => (
+                                            <th key={col} className="border p-2">{col}</th>
+                                        ))}
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {results.values.map((row, i) => (
+                                        <tr key={i}>
+                                            {row.map((cell, j) => (
+                                                <td key={j} className="border p-2">{cell}</td>
+                                            ))}
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                            <button
+                                className="mt-4 bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600"
+                                onClick={exportCSV}
+                                aria-label="Export results as CSV"
+                            >
+                                Export CSV
+                            </button>
+                        </div>
+                    )}
+                    <a
+                        href="/erd.html"
+                        className="mt-4 inline-block bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600"
+                        aria-label="Back to ERD"
+                    >
+                        Back to ERD
+                    </a>
+                </div>
+            );
+        }
+
+        ReactDOM.render(<QueryPage />, document.getElementById('root'));
+    </script>
+</body>
+</html>

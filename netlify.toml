@@ -1,0 +1,13 @@
+[build]
+  publish = "."
+  command = ""
+
+[[redirects]]
+  from = "/erd"
+  to = "/erd.html"
+  status = 200
+
+[[redirects]]
+  from = "/query"
+  to = "/query.html"
+  status = 200
