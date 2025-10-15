@@ -1,43 +1,4 @@
-<script type="text/javascript">
-        var gk_isXlsx = false;
-        var gk_xlsxFileLookup = {};
-        var gk_fileData = {};
-        function filledCell(cell) {
-          return cell !== '' && cell != null;
-        }
-        function loadFileData(filename) {
-        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
-            try {
-                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
-                var firstSheetName = workbook.SheetNames[0];
-                var worksheet = workbook.Sheets[firstSheetName];
-
-                // Convert sheet to JSON to filter blank rows
-                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
-                // Filter out blank rows (rows where all cells are empty, null, or undefined)
-                var filteredData = jsonData.filter(row => row.some(filledCell));
-
-                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
-                var headerRowIndex = filteredData.findIndex((row, index) =>
-                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
-                );
-                // Fallback
-                if (headerRowIndex === -1 || headerRowIndex > 25) {
-                  headerRowIndex = 0;
-                }
-
-                // Convert filtered JSON back to CSV
-                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
-                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
-                return csv;
-            } catch (e) {
-                console.error(e);
-                return "";
-            }
-        }
-        return gk_fileData[filename] || "";
-        }
-        </script><!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -49,37 +10,37 @@
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.23.0/dist/cytoscape.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/sql.js@1.8.0/dist/sql-wasm.min.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-storage.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        .section { min-height: 100vh; padding: 4rem; scroll-snap-align: start; position: relative; }
-        .sticky-header { position: sticky; top: 0; background: white; z-index: 10; padding: 1rem; }
-        .table-viz { width: 100%; height: 300px; }
-        .highlight { stroke: #00ff00; stroke-width: 3; fill: #e0ffe0; transition: all 1s; }
-        .fd-arrow { stroke-width: 3; marker-end: url(#arrow); animation: pulse 2s infinite; }
-        @keyframes pulse { 0% { stroke-opacity: 1; } 50% { stroke-opacity: 0.5; } 100% { stroke-opacity: 1; } }
-        .fd-arrow-red { stroke: #ff4500; }
-        .fd-arrow-blue { stroke: #1e90ff; }
-        .fd-arrow-purple { stroke: #800080; }
-        body { scroll-snap-type: y mandatory; overflow-y: scroll; }
-        .fade-in { opacity: 0; transition: opacity 1s; }
-        .fade-in.visible { opacity: 1; }
-        .error { color: red; }
-        .tooltip { position: absolute; background: #333; color: white; padding: 5px; border-radius: 3px; font-size: 12px; }
-        .table-box { transition: transform 1s, opacity 1s; }
-    </style>
+    <link rel="stylesheet" href="/styles.css">
 </head>
-<body class="bg-gray-100 font-sans">
+<body>
     <div id="root" class="container mx-auto"></div>
 
     <script type="text/babel" data-type="module">
         const { useState, useEffect, useRef } = React;
 
-        let db;
-        async function initDB() {
+        // Firebase config (replace with your Firebase project details)
+        const firebaseConfig = {
+            apiKey: "your-api-key",
+            authDomain: "your-project-id.firebaseapp.com",
+            projectId: "your-project-id",
+            storageBucket: "your-project-id.appspot.com",
+            messagingSenderId: "your-messaging-sender-id",
+            appId: "your-app-id"
+        };
+        const app = firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
+        const storage = firebase.storage();
+
+        let sqliteDb;
+        async function initSQLiteDB() {
             try {
                 const SQL = await initSqlJs({ locateFile: file => `https://cdn.jsdelivr.net/npm/sql.js@1.8.0/dist/${file}` });
-                db = new SQL.Database();
-                db.run(`
+                sqliteDb = new SQL.Database();
+                sqliteDb.run(`
                     CREATE TABLE RawRetail (
                         InvoiceNo TEXT, StockCode TEXT, Description TEXT, Quantity INTEGER,
                         InvoiceDate TEXT, UnitPrice REAL, CustomerID INTEGER, Country TEXT
@@ -93,11 +54,11 @@
                 `);
                 return true;
             } catch (err) {
-                console.error('DB Init Error:', err);
+                console.error('SQLite DB Init Error:', err);
                 return false;
             }
         }
-        initDB();
+        initSQLiteDB();
 
         function NormalDB() {
             const [step, setStep] = useState(0);
@@ -128,41 +89,52 @@
                 return () => sectionRefs.current.forEach(ref => ref && observer.unobserve(ref));
             }, [entities]);
 
-            const handleFileUpload = (event) => {
+            const handleFileUpload = async (event) => {
                 const file = event.target.files[0];
                 if (!file) return;
                 if (file.size > 10 * 1024 * 1024) {
                     setError('File too large. Max 10MB.');
                     return;
                 }
-                const reader = new FileReader();
-                reader.onload = async (e) => {
-                    try {
-                        const csv = e.target.result;
-                        const rows = csv.split('\n').map(row => row.split(','));
-                        if (rows.length < 2) throw new Error('CSV is empty or invalid');
-                        const headers = rows[0].map(h => h.trim());
-                        const types = headers.map((_, i) => {
-                            const values = rows.slice(1).map(row => row[i]);
-                            return values.every(v => !isNaN(v) && v !== '') ? 'INTEGER' : 'TEXT';
-                        });
-                        const createTable = `CREATE TABLE RawRetail (${headers.map((h, i) => `"${h}" ${types[i]}`).join(', ')})`;
-                        db.run('DROP TABLE IF EXISTS RawRetail');
-                        db.run(createTable);
-                        const insertStmt = db.prepare(`INSERT INTO RawRetail VALUES (${headers.map(() => '?').join(', ')})`);
-                        rows.slice(1).forEach(row => {
-                            if (row.length === headers.length) insertStmt.run(row);
-                        });
-                        insertStmt.free();
-                        setEntities([{ id: 'RawRetail', attrs: headers, pos: { x: 300, y: 150 } }]);
-                        setStep(0);
-                        setMetrics({ redundancy: 60, anomalies: 40 });
-                        setError(null);
-                    } catch (err) {
-                        setError('Error processing CSV: ' + err.message);
-                    }
-                };
-                reader.readAsText(file);
+                try {
+                    // Upload to Firebase Storage
+                    const storageRef = storage.ref(`csvs/${file.name}`);
+                    await storageRef.put(file);
+                    const downloadURL = await storageRef.getDownloadURL();
+                    console.log('CSV uploaded to Firebase:', downloadURL);
+
+                    // Process locally for small files
+                    const reader = new FileReader();
+                    reader.onload = async (e) => {
+                        try {
+                            const csv = e.target.result;
+                            const rows = csv.split('\n').map(row => row.split(','));
+                            if (rows.length < 2) throw new Error('CSV is empty or invalid');
+                            const headers = rows[0].map(h => h.trim());
+                            const types = headers.map((_, i) => {
+                                const values = rows.slice(1).map(row => row[i]);
+                                return values.every(v => !isNaN(v) && v !== '') ? 'INTEGER' : 'TEXT';
+                            });
+                            const createTable = `CREATE TABLE RawRetail (${headers.map((h, i) => `"${h}" ${types[i]}`).join(', ')})`;
+                            sqliteDb.run('DROP TABLE IF EXISTS RawRetail');
+                            sqliteDb.run(createTable);
+                            const insertStmt = sqliteDb.prepare(`INSERT INTO RawRetail VALUES (${headers.map(() => '?').join(', ')})`);
+                            rows.slice(1).forEach(row => {
+                                if (row.length === headers.length) insertStmt.run(row);
+                            });
+                            insertStmt.free();
+                            setEntities([{ id: 'RawRetail', attrs: headers, pos: { x: 300, y: 150 } }]);
+                            setStep(0);
+                            setMetrics({ redundancy: 60, anomalies: 40 });
+                            setError(null);
+                        } catch (err) {
+                            setError('Error processing CSV: ' + err.message);
+                        }
+                    };
+                    reader.readAsText(file);
+                } catch (err) {
+                    setError('Firebase upload error: ' + err.message);
+                }
             };
 
             const renderTable = (tableId, attrs, data, containerId, fds = [], posX = 300, colorClass = 'fd-arrow-red') => {
@@ -222,7 +194,7 @@
                         { id: 'InvoiceItems', attrs: ['InvoiceNo', 'StockCode', 'Description', 'Quantity', 'UnitPrice'], pos: { x: 400, y: 150 } }
                     ];
                     setEntities(newEntities);
-                    db.run(`
+                    sqliteDb.run(`
                         CREATE TABLE Invoices (InvoiceNo TEXT, CustomerID INTEGER, InvoiceDate TEXT, Country TEXT);
                         CREATE TABLE InvoiceItems (InvoiceNo TEXT, StockCode TEXT, Description TEXT, Quantity INTEGER, UnitPrice REAL);
                         INSERT INTO Invoices SELECT DISTINCT InvoiceNo, CustomerID, InvoiceDate, Country FROM RawRetail;
@@ -241,7 +213,7 @@
                         { id: 'InvoiceItems', attrs: ['InvoiceNo', 'StockCode', 'Description', 'Quantity', 'UnitPrice'], pos: { x: 400, y: 150 } }
                     ];
                     setEntities(newEntities);
-                    db.run(`
+                    sqliteDb.run(`
                         CREATE TABLE Customers (CustomerID INTEGER, Country TEXT);
                         INSERT INTO Customers SELECT DISTINCT CustomerID, Country FROM Invoices;
                         ALTER TABLE Invoices DROP COLUMN Country;
@@ -261,7 +233,7 @@
                         { id: 'Products', attrs: ['StockCode', 'Description', 'UnitPrice'], pos: { x: 600, y: 150 } }
                     ];
                     setEntities(newEntities);
-                    db.run(`
+                    sqliteDb.run(`
                         CREATE TABLE Products (StockCode TEXT, Description TEXT, UnitPrice REAL);
                         INSERT INTO Products SELECT DISTINCT StockCode, Description, UnitPrice FROM InvoiceItems;
                         ALTER TABLE InvoiceItems DROP COLUMN Description;
@@ -373,7 +345,7 @@
                         </div>
                         <p className="text-lg mb-4">See the normalized schema as an ER diagram.</p>
                         <a
-                            href="/erd.html"
+                            href="/erd"
                             className="mt-4 bg-purple-500 text-white px-4 py-2 rounded hover:bg-purple-600"
                             aria-label="Go to ERD page"
                         >
