@@ -14,7 +14,7 @@
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-storage.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/normaldb/styles.css">
 </head>
 <body>
     <div id="root" class="container mx-auto"></div>
@@ -22,7 +22,7 @@
     <script type="text/babel" data-type="module">
         const { useState, useEffect, useRef } = React;
 
-        // Firebase config (replace with your Firebase project details)
+        // Replace with your Firebase config
         const firebaseConfig = {
             apiKey: "your-api-key",
             authDomain: "your-project-id.firebaseapp.com",
@@ -48,9 +48,7 @@
                     INSERT INTO RawRetail VALUES
                         ('536365', '85123A', 'CREAM HANGING HEART T-LIGHT HOLDER', 6, '2010-12-01 08:26:00', 2.55, 17850, 'United Kingdom'),
                         ('536365', '71053', 'WHITE METAL LANTERN', 6, '2010-12-01 08:26:00', 3.39, 17850, 'United Kingdom'),
-                        ('536366', '84406B', 'CREAM CUPID HEARTS COAT HANGER', 8, '2010-12-01 08:28:00', 2.75, 17850, 'United Kingdom'),
-                        ('536367', '84879', 'ASSORTED COLOUR BIRD ORNAMENT', 32, '2010-12-01 08:34:00', 1.69, 13047, 'United Kingdom'),
-                        ('536368', '22960', 'JAM MAKING SET WITH JARS', 6, '2010-12-01 08:34:00', 4.25, 13047, 'United Kingdom');
+                        ('536366', '84406B', 'CREAM CUPID HEARTS COAT HANGER', 8, '2010-12-01 08:28:00', 2.75, 17850, 'United Kingdom');
                 `);
                 return true;
             } catch (err) {
@@ -101,9 +99,9 @@
                     const storageRef = storage.ref(`csvs/${file.name}`);
                     await storageRef.put(file);
                     const downloadURL = await storageRef.getDownloadURL();
-                    console.log('CSV uploaded to Firebase:', downloadURL);
+                    console.log('CSV uploaded:', downloadURL);
 
-                    // Process locally for small files
+                    // Process CSV client-side for Firestore
                     const reader = new FileReader();
                     reader.onload = async (e) => {
                         try {
@@ -111,18 +109,18 @@
                             const rows = csv.split('\n').map(row => row.split(','));
                             if (rows.length < 2) throw new Error('CSV is empty or invalid');
                             const headers = rows[0].map(h => h.trim());
-                            const types = headers.map((_, i) => {
-                                const values = rows.slice(1).map(row => row[i]);
-                                return values.every(v => !isNaN(v) && v !== '') ? 'INTEGER' : 'TEXT';
+                            const batch = db.batch();
+                            rows.slice(1).forEach((row, index) => {
+                                if (row.length === headers.length) {
+                                    const docRef = db.collection('RawRetail').doc(`row_${index}`);
+                                    const data = {};
+                                    headers.forEach((header, i) => {
+                                        data[header] = row[i];
+                                    });
+                                    batch.set(docRef, data);
+                                }
                             });
-                            const createTable = `CREATE TABLE RawRetail (${headers.map((h, i) => `"${h}" ${types[i]}`).join(', ')})`;
-                            sqliteDb.run('DROP TABLE IF EXISTS RawRetail');
-                            sqliteDb.run(createTable);
-                            const insertStmt = sqliteDb.prepare(`INSERT INTO RawRetail VALUES (${headers.map(() => '?').join(', ')})`);
-                            rows.slice(1).forEach(row => {
-                                if (row.length === headers.length) insertStmt.run(row);
-                            });
-                            insertStmt.free();
+                            await batch.commit();
                             setEntities([{ id: 'RawRetail', attrs: headers, pos: { x: 300, y: 150 } }]);
                             setStep(0);
                             setMetrics({ redundancy: 60, anomalies: 40 });
@@ -345,7 +343,7 @@
                         </div>
                         <p className="text-lg mb-4">See the normalized schema as an ER diagram.</p>
                         <a
-                            href="/erd"
+                            href="/normaldb/erd.html"
                             className="mt-4 bg-purple-500 text-white px-4 py-2 rounded hover:bg-purple-600"
                             aria-label="Go to ERD page"
                         >
